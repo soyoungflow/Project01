@@ -12,20 +12,32 @@ git branch
 
 # main으로 이동 + 최신화
 ```bash
-git checkout main
-git pull origin main
+git checkout dev#
+git pull origin dev#
 ```
 # 브랜치 생성 + 이동
 ```bash
-git checkout -b feature/브랜치이름
+git checkout -b feature/브랜치이름-작업하는이름 
 ```
 # 브랜치 확인
 ```bash
 git branch
 ```
-`* feature/브랜치이름` 로 표시되면 성공
+`* feature/브랜치이름-작업하는이름` 로 표시되면 성공
 
+# 다른 조원들의 브랜치 확인이 필요할때
+```bash
+git fetch origin #원격 목록 최신화(업데이트)
+git switch feature/브랜치이름-작업하는이름
+```
+##단, 자신의 브랜치에서 작업하던게 사라지지 않도록
 
+```bash
+git stash #내 브랜치 내용 잠시 서랍에 두기
+-> #다른 브랜치확인 후 되돌아와서
+git switch feature/브랜치이름-작업하는이름
+git stash pop #아까 작업 다시 꺼내기
+```
 -----------------------------------------------
 
 # 1. 가상환경 생성
@@ -45,11 +57,14 @@ pyproject.toml은 프로젝트 설정 파일이라 팀장만 관리합니다.
 -----------------------------------------------
 
 ## 코드 작성후, 이렇게 해야 깃허브에 올라갑니다
-
+# 어떤 코드가 바뀌었는지 각자확인
+```bash
+git status
+```
 # 코드 수정 후 커밋
 ```bash
-git add .  # 스테이징(add)
-git commit -am "Improve layout with tabs and sidebar"  # 커밋(commit)
+git add 코드 변경된 파일명  # 스테이징(add)
+git commit -m "메세지"  # 커밋방법(commit)
 ```
 
 # 원격 브랜치로 push (PR 만들려면 꼭 필요)
