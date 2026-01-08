@@ -5,12 +5,12 @@
 
 
 항상 pull하면 (다운받으면, 터미널에 가장 먼저,입력해줄것)
-# 지금 내가 main인지 확인
+# 지금 내가 어디위치인지 확인
 ```bash
-git branch
+git branch # *하고 나오는 브랜치명이 위치
 ```
 
-# main으로 이동 + 최신화
+# 메인 브랜치로 이동 + 최신화
 ```bash
 git checkout dev#
 git pull origin dev#
