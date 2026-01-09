@@ -5,6 +5,28 @@
 
 
 항상 pull하면 (다운받으면, 터미널에 가장 먼저,입력해줄것)
+# 지금 내가 main인지 확인
+```bash
+git branch
+```
+
+# main으로 이동 + 최신화
+```bash
+git checkout main
+git pull origin main
+```
+# 브랜치 생성 + 이동
+```bash
+git checkout -b feature/브랜치이름
+```
+# 브랜치 확인
+```bash
+git branch
+```
+`* feature/브랜치이름` 로 표시되면 성공
+
+
+-----------------------------------------------
 
 # 1. 가상환경 생성
 uv venv
@@ -12,9 +34,30 @@ uv venv
 # 2. 가상환경 활성화
 source .venv/bin/activate
 
-# 3. 의존성 설치
+# 3. 라이브러리 환경 똑같도록 설치 (혹시몰라서)
 uv pip install -r requirements.txt
+
 
 # 주의 사항
 pyproject.toml은 프로젝트 설정 파일이라 팀장만 관리합니다.
 라이브러리 추가는 requirements.txt로 공유하세요
+
+-----------------------------------------------
+
+## 코드 작성후, 이렇게 해야 깃허브에 올라갑니다
+
+# 코드 수정 후 커밋
+```bash
+git add .  # 스테이징(add)
+git commit -am "Improve layout with tabs and sidebar"  # 커밋(commit)
+```
+
+# 원격 브랜치로 push (PR 만들려면 꼭 필요)
+	브랜치 push (처음 한 번은 -u 권장)
+```bash
+git push -u origin feature/브랜치이름
+```
+	성공하면 GitHub에 feature/브랜치이름  생깁니다.
+
+  
+
