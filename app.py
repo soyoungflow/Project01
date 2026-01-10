@@ -362,7 +362,7 @@ st.markdown(
   padding: 24px 32px;
   background: linear-gradient(135deg, rgba(130, 88, 255, 0.15), rgba(85, 60, 200, 0.08));
   border-radius: 20px;
-  border: 1px solid rgba(160, 120, 255, 0.25);
+  border: 1px solid rgba(160, 120, 255, .25);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
 ">
   <div style="font-size:46px; line-height:1;">🧾</div>
@@ -385,13 +385,13 @@ with st.sidebar:
     # D1. 기간 필터
     today = pd.Timestamp.today().date()
     start_date, end_date = st.date_input(
-        "기간 선택 (D1)",
+        "기간 선택",
         value=(today, today),
         help="이 기간에 해당하는 데이터만 보여줍니다.",
     )
 
     # D2. 메모 검색 (키워드 필터)
-    keyword = st.text_input("검색어 (D2)", value="", placeholder="예) 점심, 지하철 ...")
+    keyword = st.text_input("검색어", value="", placeholder="예) 점심, 지하철 ...")
     
     type_filter = st.selectbox("구분", ["전체", "지출", "수입"], index=0)
 
@@ -439,7 +439,7 @@ df_view = df_f.rename(
 # =============================
 # (8) F1. 새 거래 등록 (입력 기능)
 # =============================
-st.markdown("### ➕ F1. 새 거래 등록")
+st.markdown("### ➕ 새 거래 등록")
 
 col_a, col_b, col_c = st.columns([1.4, 1.0, 1.0])
 with col_a:
