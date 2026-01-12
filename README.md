@@ -59,8 +59,6 @@ git push -u origin feature/브랜치이름
 ```
 	성공하면 GitHub에 feature/브랜치이름  생깁니다.
 
-특이사항 *
-/조병준
-- 3시간 외출 
+
   
 
