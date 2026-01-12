@@ -10,11 +10,15 @@
 git branch # *하고 나오는 브랜치명이 위치
 ```
 
-# 메인 브랜치로 이동 + 최신화
+# 원하는 브랜치로 이동 + 최신화
 ```bash
-git checkout dev#
-git pull origin dev#
+git checkout 브랜치이름
 ```
+# 브랜치의 내용 당겨와서 합치기
+```bash
+git pull origin 브랜치이름
+```
+
 # 브랜치 생성 + 이동
 ```bash
 git checkout -b feature/브랜치이름-작업하는이름 
@@ -49,6 +53,9 @@ source .venv/bin/activate
 # 3. 라이브러리 환경 똑같도록 설치 (혹시몰라서)
 uv pip install -r requirements.txt
 
+# 4. README.md는 항상 업데이트 (README만 업뎃하는법)
+git fetch origin -> git checkout origin.dev# -- README.md 
+#origin/dev#에 있는 README.md파일만 내 현재 브랜치로 복사해줘라는 뜻
 
 # 주의 사항
 pyproject.toml은 프로젝트 설정 파일이라 팀장만 관리합니다.
@@ -64,15 +71,17 @@ git status
 # 코드 수정 후 커밋
 ```bash
 git add 코드 변경된 파일명  # 스테이징(add)
-git commit -m "메세지"  # 커밋방법(commit)
+git commit -m "커밋할내용간략히정리"  # 커밋방법(commit)
 ```
 
 # 원격 브랜치로 push (PR 만들려면 꼭 필요)
-	브랜치 push (처음 한 번은 -u 권장)
+	
 ```bash
+git push (처음 한 번은 아래문장의 -u 권장)
 git push -u origin feature/브랜치이름
 ```
 	성공하면 GitHub에 feature/브랜치이름  생깁니다.
+	이미 생겼다면, add,commit한 내용이 올라갑니다.
 
   
 
