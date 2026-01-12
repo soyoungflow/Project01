@@ -54,7 +54,8 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 
 # 4. README.md는 항상 업데이트 (README만 업뎃하는법)
-git fetch origin -> git checkout origin.dev# -- README.md 
+git fetch origin 
+git checkout origin/dev# -- README.md 
 #origin/dev#에 있는 README.md파일만 내 현재 브랜치로 복사해줘라는 뜻
 
 # 주의 사항
