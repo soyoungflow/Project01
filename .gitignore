@@ -6,8 +6,6 @@ dist/
 wheels/
 *.egg-info
 
-# 가상 환경 (다양한 이름 대응)
-venv/
-env/
-.env/
+# Virtual environments
+.venv
 
