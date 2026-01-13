@@ -12,7 +12,7 @@ def load_transactions(path):
     - 파일이 없거나 비어 있으면 빈 리스트 반환
     """
 
-    # CSV 파일이 아직 없으면 (앱 첫 실행) 빈 리스트
+    # CSV 파일이 아직 없으면 (앱 첫 실행) 빈 리스트로 시작
     if not os.path.exists(path):
         return []
 
@@ -27,10 +27,11 @@ def load_transactions(path):
     if df.empty:
         return []
 
-    # 컬럼이 누락된 경우 대비 (앱 전체 로직 보호)
+    # 컬럼 누락 대비:
+    # amount는 숫자여야 하므로 0, 나머지는 빈 문자열로 기본값 채움
     for col in COLUMNS:
         if col not in df.columns:
-            df[col] = ""
+            df[col] = 0 if col == "amount" else ""
 
     # amount 컬럼을 숫자로 변환
     # 숫자로 변환 불가한 값은 NaN → 0 → int
@@ -53,16 +54,19 @@ def save_transactions(path, transactions):
     - 항상 전체 데이터를 덮어쓰기 저장
     """
 
-    # data 폴더가 없으면 생성 (저장 시 에러 방지)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # 경로에 폴더가 포함된 경우에만 폴더 생성 (빈 경로 방지)
+    dirpath = os.path.dirname(path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
 
     # 거래 리스트를 DataFrame으로 변환
     df = pd.DataFrame(transactions)
 
-    # 컬럼 누락 대비 (저장 안정성 확보)
+    # 컬럼 누락 대비:
+    # amount는 0, 나머지는 빈 문자열로 채워서 저장 안정성 확보
     for col in COLUMNS:
         if col not in df.columns:
-            df[col] = ""
+            df[col] = 0 if col == "amount" else ""
 
     # amount 컬럼을 정수형으로 정리
     df["amount"] = (
