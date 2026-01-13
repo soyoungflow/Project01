@@ -7,16 +7,16 @@ class TestServices(unittest.TestCase):
     def setUp(self):
         """테스트 데이터 준비"""
         data_list = [
-            {"type": "income", "category": "급여", "amount": 3000000},
-            {"type": "income", "category": "부수입", "amount": 100000},
-            {"type": "expense", "category": "식비", "amount": 10000},
-            {"type": "expense", "category": "식비", "amount": 20000},
-            {"type": "expense", "category": "교통", "amount": 1500},
-            {"type": "expense", "category": "교통", "amount": 1500},
-            {"type": "expense", "category": "쇼핑", "amount": 50000},
-            {"type": "expense", "category": "쇼핑", "amount": 30000},
-            {"type": "expense", "category": "의료", "amount": 15000},
-            {"type": "expense", "category": "기타", "amount": 2000}
+            {"type": "수입", "category": "급여", "amount": 3000000},
+            {"type": "수입", "category": "부수입", "amount": 100000},
+            {"type": "지출", "category": "식비", "amount": 10000},
+            {"type": "지출", "category": "식비", "amount": 20000},
+            {"type": "지출", "category": "교통", "amount": 1500},
+            {"type": "지출", "category": "교통", "amount": 1500},
+            {"type": "지출", "category": "쇼핑", "amount": 50000},
+            {"type": "지출", "category": "쇼핑", "amount": 30000},
+            {"type": "지출", "category": "의료", "amount": 15000},
+            {"type": "지출", "category": "기타", "amount": 2000}
         ]
         self.transactions = pd.DataFrame(data_list)
 
