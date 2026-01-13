@@ -46,3 +46,4 @@ def calc_category_expense(transactions: list[dict]) -> dict[str, int]:
         totals[category] += amount  # 카테고리별 누적
 
     return dict(totals)
+

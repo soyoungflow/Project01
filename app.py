@@ -1,130 +1,226 @@
-# app.py  # ✅ 최종본 W (U 기반 + desc→description 전면 교체 + 단일 컬러 디자인 통일)
+# app.py  # Streamlit UI 담당 (입력/필터/표/차트/예산 관제)  # ← "UI는 여기서만", 로직은 최대한 단순하게
 
-import os  # 폴더/파일 경로 처리
-import json  # 예산 저장/불러오기
-from datetime import date  # 날짜 기본값
+import os  # 파일 경로 만들 때 사용
+import json  # 예산(설정값) 저장/로드용
+from copy import deepcopy  # Undo(실행 취소)에서 안전하게 복사할 때 사용
 
-import pandas as pd  # CSV 읽기/쓰기 + 집계
-import streamlit as st  # UI
+import pandas as pd  # 표/필터/그룹 집계용
+import streamlit as st  # Streamlit UI 프레임워크
+import plotly.express as px  # 차트(Plotly)
 
-
-# =============================================================================
+# =============================
 # (0) 기본 설정
-# =============================================================================
-st.set_page_config(
-    page_title="나만의 미니 가계부 (지출 관리 서비스)",
-    layout="wide",
-)
+# =============================
+st.set_page_config(page_title="나만의 미니 가계부", layout="wide")  # 화면 넓게 쓰기
 
-DATA_DIR = "data"
-LEDGER_PATH = os.path.join(DATA_DIR, "ledger.csv")
-BUDGET_PATH = os.path.join(DATA_DIR, "budgets.json")
+DATA_DIR = "data"  # 데이터 폴더
+os.makedirs(DATA_DIR, exist_ok=True)  # 없으면 폴더 생성
 
-CATEGORIES = ["식비", "교통", "통신", "생활", "기타"]
-TX_TYPES = ["지출", "수입"]
-
-# ✅ (1) desc → description 전면 교체 (컬럼/변수/세션키/위젯키 모두)
-COLUMNS = ["_idx", "date", "type", "category", "description", "amount"]
+DATA_PATH = os.path.join(DATA_DIR, "ledger.csv")  # 거래 내역 CSV 경로
+BUDGET_PATH = os.path.join(DATA_DIR, "budgets.json")  # 예산 저장 JSON 경로
 
 
-# =============================================================================
-# (1) 다크 테마 + 입력 박스 단일 컬러 디자인 통일 (구분/카테고리 기준)
-# =============================================================================
+# =============================
+# (1) 공통 유틸 함수들
+# =============================
+def _ensure_ledger_file_exists() -> None:
+    """CSV가 없으면 빈 CSV를 만들어서 앱이 항상 정상 실행되게 한다."""
+    if not os.path.exists(DATA_PATH):
+        df0 = pd.DataFrame(columns=["date", "type", "category", "desc", "amount"])
+        df0.to_csv(DATA_PATH, index=False, encoding="utf-8-sig")
+
+
+def load_df() -> pd.DataFrame:
+    """
+    CSV에서 거래 데이터를 읽어온다.
+    - '내용(텍스트)'이 재실행 때 사라지는 문제는 대부분 인코딩/NaN 처리에서 터짐.
+    - 그래서 utf-8-sig로 읽고, desc는 무조건 문자열로 고정한다.
+    """
+    _ensure_ledger_file_exists()
+
+    try:
+        df = pd.read_csv(DATA_PATH, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        # 혹시 팀원이 다른 인코딩으로 저장했을 때를 대비한 안전장치
+        df = pd.read_csv(DATA_PATH, encoding="utf-8")
+
+    # 컬럼이 없거나 이름이 달라졌을 때도 앱이 죽지 않게 보정
+    for col in ["date", "type", "category", "desc", "amount"]:
+        if col not in df.columns:
+            df[col] = None
+
+    # 타입 정리 (중요: desc는 문자열 고정)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df["type"] = df["type"].astype(str).fillna("")
+    df["category"] = df["category"].astype(str).fillna("")
+    df["desc"] = df["desc"].astype(str).fillna("")  # ← "내용" 사라짐 방지 핵심
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0).astype(int)
+
+    # 보기 좋게 정렬 (날짜 최신순, 같은 날짜는 최근 입력이 아래로 가도 상관없음)
+    df = df.sort_values(["date"], ascending=[False]).reset_index(drop=True)
+    return df
+
+
+def save_df(df: pd.DataFrame) -> None:
+    """
+    CSV로 저장한다.
+    - utf-8-sig로 저장해서 한글/내용(텍스트) 깨짐이나 공백화 이슈를 최대한 차단한다.
+    """
+    out = df.copy()
+    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.date
+    out["type"] = out["type"].astype(str).fillna("")
+    out["category"] = out["category"].astype(str).fillna("")
+    out["desc"] = out["desc"].astype(str).fillna("")  # ← 저장 시에도 문자열 고정
+    out["amount"] = pd.to_numeric(out["amount"], errors="coerce").fillna(0).astype(int)
+
+    out.to_csv(DATA_PATH, index=False, encoding="utf-8-sig")
+
+
+def load_budgets() -> dict:
+    """예산 설정을 JSON에서 읽어온다. 파일이 없으면 기본값을 만든다."""
+    if not os.path.exists(BUDGET_PATH):
+        return {"전체": 0, "식비": 0, "교통": 0, "통신": 0, "생활": 0, "기타": 0}
+
+    try:
+        with open(BUDGET_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+    # 키 누락 방지(앱이 죽지 않게)
+    base = {"전체": 0, "식비": 0, "교통": 0, "통신": 0, "생활": 0, "기타": 0}
+    base.update({k: int(v) if str(v).isdigit() else 0 for k, v in data.items()})
+    return base
+
+
+def save_budgets(budgets: dict) -> None:
+    """예산 설정을 JSON으로 저장한다."""
+    with open(BUDGET_PATH, "w", encoding="utf-8") as f:
+        json.dump(budgets, f, ensure_ascii=False, indent=2)
+
+
+def push_history():
+    """Undo를 위해 현재 df를 히스토리에 저장한다."""
+    st.session_state["history"].append(deepcopy(st.session_state["df"]))
+
+
+def pop_history():
+    """Undo 실행: 히스토리에서 되돌린다."""
+    if st.session_state["history"]:
+        st.session_state["df"] = st.session_state["history"].pop()
+        save_df(st.session_state["df"])
+
+
+def fmt_won(x: int) -> str:
+    """원 단위 보기 좋게 찍기"""
+    try:
+        return f"{int(x):,}원"
+    except Exception:
+        return "0원"
+
+
+# =============================
+# (2) 세션 초기화 (Streamlit은 재실행이 잦아서 상태를 세션에 넣어야 UI가 안정적임)
+# =============================
+if "df" not in st.session_state:
+    st.session_state["df"] = load_df()  # 앱 시작 시 CSV를 읽어서 메모리에 올린다
+
+if "history" not in st.session_state:
+    st.session_state["history"] = []  # Undo 스택
+
+if "budgets" not in st.session_state:
+    st.session_state["budgets"] = load_budgets()  # 예산 설정 로드
+
+
+# =============================
+# (3) 다크 테마 + 입력 박스 디자인 통일 CSS
+# =============================
 st.markdown(
     """
 <style>
-/* 전체 배경: 다크 + 보라 톤 */
+/* 전체 배경(그라데이션) */
 .stApp {
-  background: radial-gradient(1200px 600px at 50% 0%, rgba(120,80,255,0.25), rgba(0,0,0,0) 55%),
-              radial-gradient(900px 450px at 50% 15%, rgba(120,80,255,0.18), rgba(0,0,0,0) 60%),
-              linear-gradient(180deg, #070A12 0%, #070A12 100%);
-  color: #EAEAF0;
+  background: radial-gradient(1200px 700px at 35% 0%, rgba(130, 88, 255, 0.35), rgba(10, 12, 18, 0.98) 60%);
+  color: #EDEDF4;
 }
 
-/* 기본 텍스트 */
-h1,h2,h3,h4,h5,h6,p,span,label,div { color: #EAEAF0; }
+/* 제목/텍스트 기본 톤 */
+h1, h2, h3, h4, h5, h6, p, div, span, label {
+  color: #EDEDF4 !important;
+}
 
-/* 섹션 헤더(보라 박스) */
-.section-header {
-  width: 100%;
-  padding: 18px 22px;
+/* “보라색 헤더 바(박스)” */
+.purple-bar {
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(130,90,255,0.40), rgba(130,90,255,0.18));
-  border: 1px solid rgba(130,90,255,0.35);
-  box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+  padding: 18px 22px;
+  background: linear-gradient(90deg, rgba(128, 77, 255, 0.35), rgba(85, 60, 200, 0.18));
+  border: 1px solid rgba(160, 120, 255, 0.35);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+
+/* 헤더 바 안의 텍스트 */
+.purple-bar-title {
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
   display: flex;
   align-items: center;
   gap: 12px;
 }
-.section-header .title {
-  font-size: 40px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
-}
-.section-header .subtitle {
-  opacity: 0.85;
-  font-size: 14px;
-  margin-top: 2px;
+
+/* 입력 박스 톤(왼쪽 필터/가운데 입력/예산 입력 통일) */
+:root {
+  --box-bg: rgba(58, 61, 70, 0.78);
+  --box-border: rgba(210, 210, 230, 0.18);
+  --box-border-strong: rgba(210, 210, 230, 0.26);
+  --box-radius: 26px;
 }
 
-/* ✅ 모든 입력 박스 공통 스타일: 구분/카테고리 박스 톤과 완전 동일 */
-div[data-baseweb="input"],
-div[data-baseweb="select"],
-div[data-baseweb="textarea"],
-div[data-baseweb="datepicker"],
-div[data-baseweb="spinbutton"] {
-    background-color: #3a3d46 !important;
-    border-radius: 999px !important;
-    border: 1px solid #5a5f6a !important;
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02) !important;
+/* text_input / number_input / date_input 공통 느낌 */
+div[data-testid="stTextInput"] input,
+div[data-testid="stNumberInput"] input,
+div[data-testid="stDateInput"] input {
+  background: var(--box-bg) !important;
+  border: 1px solid var(--box-border) !important;
+  border-radius: var(--box-radius) !important;
+  color: #EDEDF4 !important;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
 }
 
-/* 내부 텍스트 */
-div[data-baseweb="input"] input,
-div[data-baseweb="textarea"] textarea {
-    color: #ffffff !important;
-    background-color: transparent !important;
+/* selectbox(구분/카테고리)과 같은 톤으로 통일 */
+div[data-baseweb="select"] > div {
+  background: var(--box-bg) !important;
+  border: 1px solid var(--box-border) !important;
+  border-radius: var(--box-radius) !important;
+  color: #EDEDF4 !important;
 }
+div[data-baseweb="select"] span { color: #EDEDF4 !important; }
 
-/* placeholder */
-div[data-baseweb="input"] input::placeholder,
-div[data-baseweb="textarea"] textarea::placeholder {
-    color: rgba(255,255,255,0.45) !important;
-}
-
-/* select 내부 글자 */
-div[data-baseweb="select"] * {
-    color: #ffffff !important;
-}
-
-/* 포커스 시 */
-div[data-baseweb]:focus-within {
-    box-shadow: 0 0 0 2px rgba(130,90,255,0.35) !important;
-    border-color: #825AFF !important;
+/* 사이드바도 같은 톤 */
+section[data-testid="stSidebar"] {
+  background: rgba(10, 12, 18, 0.55) !important;
+  border-right: 1px solid rgba(255,255,255,0.06);
 }
 
 /* 버튼 */
 .stButton > button {
-  background: linear-gradient(90deg, rgba(130,90,255,0.85), rgba(130,90,255,0.55));
-  border: 1px solid rgba(130,90,255,0.40);
-  color: #FFFFFF;
-  border-radius: 999px;
-  padding: 10px 18px;
+  border-radius: 18px;
+  padding: 10px 16px;
+  border: 1px solid rgba(160,120,255,0.35);
+  background: rgba(128, 77, 255, 0.35);
+  color: #EDEDF4;
   font-weight: 700;
 }
-.stButton > button:hover { filter: brightness(1.05); }
-
-/* 데이터프레임 */
-div[data-testid="stDataFrame"] {
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 18px;
-  overflow: hidden;
+.stButton > button:hover {
+  border: 1px solid rgba(160,120,255,0.55);
+  background: rgba(128, 77, 255, 0.45);
 }
 
-/* 사이드바도 너무 어둡지 않게 */
-section[data-testid="stSidebar"] {
-  background: rgba(255,255,255,0.04);
-  border-right: 1px solid rgba(255,255,255,0.06);
+/* 데이터테이블(에디터) 톤 */
+div[data-testid="stDataFrame"] {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
 }
 </style>
 """,
@@ -132,541 +228,424 @@ section[data-testid="stSidebar"] {
 )
 
 
-# =============================================================================
-# (2) 파일/데이터 유틸
-# =============================================================================
-def ensure_dir() -> None:
-    """data 폴더 없으면 생성"""
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-
-def load_ledger() -> pd.DataFrame:
-    """
-    거래내역 CSV 로드.
-    - 과거 데이터에 desc 컬럼이 있으면 description으로 자동 변환(호환성)
-    - description은 항상 저장/로딩되므로 재실행해도 '내용'이 안 사라짐
-    """
-    ensure_dir()
-
-    if not os.path.exists(LEDGER_PATH):
-        return pd.DataFrame(columns=COLUMNS)
-
-    df = pd.read_csv(LEDGER_PATH)
-
-    # ✅ 과거 호환: desc → description
-    if "desc" in df.columns and "description" not in df.columns:
-        df = df.rename(columns={"desc": "description"})
-
-    # 필수 컬럼 보정
-    for col in COLUMNS:
-        if col not in df.columns:
-            df[col] = "" if col in ["date", "type", "category", "description"] else 0
-
-    df["_idx"] = pd.to_numeric(df["_idx"], errors="coerce").fillna(0).astype(int)
-    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0).astype(int)
-    df["description"] = df["description"].fillna("").astype(str)
-
-    return df[COLUMNS].copy()
-
-
-def save_ledger(df: pd.DataFrame) -> None:
-    """거래내역 저장 (description 포함)"""
-    ensure_dir()
-
-    df = df.copy()
-    if "desc" in df.columns:
-        df = df.rename(columns={"desc": "description"})
-
-    for col in COLUMNS:
-        if col not in df.columns:
-            df[col] = "" if col in ["date", "type", "category", "description"] else 0
-
-    df["_idx"] = pd.to_numeric(df["_idx"], errors="coerce").fillna(0).astype(int)
-    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0).astype(int)
-    df["description"] = df["description"].fillna("").astype(str)
-
-    df = df[COLUMNS].copy()
-    df.to_csv(LEDGER_PATH, index=False)
-
-
-def load_budgets() -> dict:
-    """
-    예산 로드:
-    - {"전체": 0, "식비":0, ...}
-    """
-    ensure_dir()
-    default_b = {"전체": 0, **{c: 0 for c in CATEGORIES}}
-
-    if not os.path.exists(BUDGET_PATH):
-        return default_b
-
-    try:
-        with open(BUDGET_PATH, "r", encoding="utf-8") as f:
-            b = json.load(f)
-    except Exception:
-        b = default_b
-
-    for k in default_b:
-        if k not in b:
-            b[k] = 0
-
-    for k in b:
-        try:
-            b[k] = int(b[k])
-        except Exception:
-            b[k] = 0
-
-    return b
-
-
-def save_budgets(b: dict) -> None:
-    """예산 저장"""
-    ensure_dir()
-    with open(BUDGET_PATH, "w", encoding="utf-8") as f:
-        json.dump(b, f, ensure_ascii=False, indent=2)
-
-
-def to_dt(s: pd.Series) -> pd.Series:
-    """문자열 date 컬럼을 datetime으로 변환 (필터/월관제용)"""
-    return pd.to_datetime(s, errors="coerce")
-
-
-def this_month_range(today_: date) -> tuple[date, date]:
-    """이번 달 1일~말일"""
-    first = today_.replace(day=1)
-    if first.month == 12:
-        next_first = first.replace(year=first.year + 1, month=1, day=1)
-    else:
-        next_first = first.replace(month=first.month + 1, day=1)
-    last = (pd.to_datetime(next_first) - pd.Timedelta(days=1)).date()
-    return first, last
-
-
-# =============================================================================
-# (3) 세션 상태 초기화
-# =============================================================================
-if "df" not in st.session_state:
-    st.session_state.df = load_ledger()
-
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-if "budgets" not in st.session_state:
-    st.session_state.budgets = load_budgets()
-
-
-def push_history() -> None:
-    """Undo용: 현재 df 복사본을 history에 저장"""
-    st.session_state.history.append(st.session_state.df.copy())
-
-
-def undo_last() -> None:
-    """Undo: 마지막 상태로 되돌림"""
-    if st.session_state.history:
-        st.session_state.df = st.session_state.history.pop()
-        save_ledger(st.session_state.df)
-
-
-# =============================================================================
-# (4) 상단 타이틀
-# =============================================================================
+# =============================
+# (4) 헤더(타이틀)
+# =============================
 st.markdown(
     """
-<div class="section-header">
-  <div style="font-size:46px;">🧾</div>
+<div style="display:flex; align-items:flex-start; gap:14px; margin-bottom:8px;">
+  <div style="font-size:46px; line-height:1;">🧾</div>
   <div>
-    <div class="title">나만의 미니 가계부 (지출 관리 서비스)</div>
-    <div class="subtitle">입력 → 저장 → 즉시 반영되는 MVP 가계부</div>
+    <div style="font-size:44px; font-weight:900; letter-spacing:-0.6px;">나만의 미니 가계부 (지출 관리 서비스)</div>
+    <div style="opacity:0.75; margin-top:4px;">입력 → 저장 → 즉시 반영되는 MVP 가계부</div>
   </div>
 </div>
 """,
     unsafe_allow_html=True,
 )
-st.write("")
 
 
-# =============================================================================
-# (5) 사이드바 필터
-# =============================================================================
+# =============================
+# (5) 왼쪽 필터(기간/검색어/구분/카테고리)
+# =============================
 with st.sidebar:
-    st.markdown("### 🔎 필터")
+    st.markdown("## 🔎 필터")
 
-    today = date.today()
-    date_range = st.date_input(
+    # 기간 선택(시작~끝)
+    min_date = pd.to_datetime("2000-01-01").date()
+    max_date = pd.to_datetime("2100-12-31").date()
+
+    # 기본값: 오늘 하루
+    today = pd.Timestamp.today().date()
+
+    start_date, end_date = st.date_input(
         "기간 선택",
         value=(today, today),
-        key="filter_date_range",
+        min_value=min_date,
+        max_value=max_date,
+        help="이 기간에 해당하는 데이터만 보여줍니다.",
     )
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_date, end_date = date_range
-    else:
-        start_date, end_date = today, today
+    if isinstance(start_date, (list, tuple)) and len(start_date) == 2:
+        # 일부 환경에서 date_input이 튜플이 아닌 리스트로 들어오는 경우 대응
+        start_date, end_date = start_date[0], start_date[1]
 
-    keyword = st.text_input("검색어(내용 포함)", value="", key="filter_keyword")
+    keyword = st.text_input("검색어(내용 포함)", value="", placeholder="예) 점심, 지하철 ...")
 
-    type_filter = st.selectbox("구분", ["전체"] + TX_TYPES, index=0, key="filter_type")
-    category_filter = st.selectbox("카테고리", ["전체"] + CATEGORIES, index=0, key="filter_category")
+    type_filter = st.selectbox("구분", ["전체", "지출", "수입"], index=0)
 
+    # 카테고리 목록은 데이터에서 자동 생성(없으면 기본 5개)
+    base_categories = ["식비", "교통", "통신", "생활", "기타"]
+    data_categories = sorted([c for c in st.session_state["df"]["category"].unique().tolist() if c])
+    categories = ["전체"] + sorted(list(set(base_categories + data_categories)))
 
-def get_filtered_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    사이드바 필터를 df에 적용한 결과 반환
-    - 날짜/구분/카테고리/검색어(내용 포함)
-    """
-    tmp = df.copy()
-
-    tmp["_dt"] = to_dt(tmp["date"])
-    start_dt = pd.to_datetime(start_date)
-    end_dt = pd.to_datetime(end_date)
-
-    tmp = tmp[(tmp["_dt"].notna()) & (tmp["_dt"] >= start_dt) & (tmp["_dt"] <= end_dt)]
-
-    if type_filter != "전체":
-        tmp = tmp[tmp["type"] == type_filter]
-
-    if category_filter != "전체":
-        tmp = tmp[tmp["category"] == category_filter]
-
-    if keyword.strip():
-        k = keyword.strip()
-        # ✅ desc 금지, description만
-        tmp = tmp[tmp["description"].fillna("").astype(str).str.contains(k, case=False, na=False)]
-
-    return tmp.drop(columns=["_dt"], errors="ignore")
+    category_filter = st.selectbox("카테고리", categories, index=0)
 
 
-# =============================================================================
-# (6) 새 거래 등록 (보라 박스 안에 타이틀이 들어가게)
-# =============================================================================
+# =============================
+# (6) 필터 적용
+# =============================
+df_all = st.session_state["df"].copy()
+
+# 번호(사용자용 컬럼): 내부 index 대신 사람이 이해하는 “번호”
+df_all["번호"] = range(len(df_all))
+
+# 날짜 필터 (date가 비어있으면 제외)
+df_f = df_all.dropna(subset=["date"]).copy()
+df_f = df_f[(df_f["date"] >= start_date) & (df_f["date"] <= end_date)].copy()
+
+# 구분 필터
+if type_filter != "전체":
+    df_f = df_f[df_f["type"] == type_filter].copy()
+
+# 카테고리 필터
+if category_filter != "전체":
+    df_f = df_f[df_f["category"] == category_filter].copy()
+
+# 내용(검색어) 필터
+if keyword.strip():
+    df_f = df_f[df_f["desc"].astype(str).str.contains(keyword.strip(), na=False)].copy()
+
+# 화면용 컬럼명(KR)
+df_view = df_f.rename(
+    columns={
+        "date": "날짜",
+        "type": "구분",
+        "category": "카테고리",
+        "desc": "내용",
+        "amount": "금액",
+    }
+)[["번호", "날짜", "구분", "카테고리", "내용", "금액"]].copy()
+
+
+# =============================
+# (7) 새 거래 등록(상단 입력 폼)
+# =============================
 st.markdown(
     """
-<div class="section-header" style="margin-top:14px;">
-  <div style="font-size:34px;">➕</div>
-  <div class="title" style="font-size:36px;">새 거래 등록</div>
-  <div style="margin-left:10px; opacity:0.85; font-weight:700;">(즉시 저장)</div>
+<div class="purple-bar" style="margin-top:14px; margin-bottom:12px;">
+  <div class="purple-bar-title">➕ 새 거래 등록</div>
 </div>
 """,
     unsafe_allow_html=True,
 )
-st.write("")
 
-c1, c2, c3 = st.columns([2.2, 1.6, 1.6])
-with c1:
-    tx_date = st.date_input("날짜", value=today, key="input_date")
-with c2:
-    tx_type = st.selectbox("구분", TX_TYPES, index=0, key="input_type")
-with c3:
-    tx_category = st.selectbox("카테고리", CATEGORIES, index=0, key="input_category")
+# 입력 폼(여기서 등록 버튼 누르면 df에 추가하고 즉시 저장)
+col_a, col_b, col_c = st.columns([1.4, 1.0, 1.0])
+with col_a:
+    in_date = st.date_input("날짜", value=today)
+with col_b:
+    in_type = st.selectbox("구분", ["지출", "수입"], index=0)
+with col_c:
+    in_category = st.selectbox("카테고리", ["식비", "교통", "통신", "생활", "기타"], index=0)
 
-# ✅ (1) desc → description: 변수명/위젯키/세션키 모두 description으로 통일
-description = st.text_input(
-    "내용",
-    value="",
-    key="input_description",  # 입력 위젯 키도 desc 금지
-    placeholder="예) 지하철 / 점심 / 통신요금 ...",
-)
-amount = st.number_input("금액(원)", min_value=0, step=1000, value=0, key="input_amount")
+in_desc = st.text_input("내용", value="", placeholder="예) 지하철 / 점심 / 통신요금 ...")
+in_amount = st.number_input("금액(원)", min_value=0, step=1000, value=0)
 
-if st.button("등록", key="btn_add"):
-    push_history()
+if st.button("등록"):
+    push_history()  # ← Undo 가능하게 등록 전에 저장
 
-    df = st.session_state.df.copy()
-    next_idx = (df["_idx"].max() + 1) if len(df) else 0
-
-    # ✅ new_row도 desc 금지: description만 사용
-    new_row = {
-        "_idx": int(next_idx),
-        "date": tx_date.strftime("%Y-%m-%d"),
-        "type": tx_type,
-        "category": tx_category,
-        "description": str(description).strip(),
-        "amount": int(amount),
-    }
-
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    st.session_state.df = df
-    save_ledger(df)
-
-    # 입력값 리셋 (다음 입력 편하게)
-    st.session_state.input_description = ""
-    st.session_state.input_amount = 0
-
-    st.success("저장 완료! (CSV에 바로 반영됨)")
+    new_row = pd.DataFrame(
+        [
+            {
+                "date": in_date,
+                "type": in_type,
+                "category": in_category,
+                "desc": str(in_desc),  # ← 문자열 고정
+                "amount": int(in_amount),
+            }
+        ]
+    )
+    st.session_state["df"] = pd.concat([new_row, st.session_state["df"]], ignore_index=True)
+    save_df(st.session_state["df"])
+    st.success("저장 완료! (즉시 반영됨)")
+    st.rerun()  # UI 즉시 갱신
 
 
-# =============================================================================
-# (7) 탭: 데이터 / 차트 / 관제(예산)
-# =============================================================================
+# =============================
+# (8) 탭(데이터 / 차트 / 관제(예산))
+# =============================
 tab_data, tab_chart, tab_budget = st.tabs(["📄 데이터", "📊 차트", "🚨 관제(예산)"])
 
 
-# =============================================================================
-# (8) 데이터 탭
-# =============================================================================
+# =============================
+# (8-1) 데이터 탭
+# =============================
 with tab_data:
     st.markdown("## 📌 필터 결과 데이터")
 
+    # 버튼 4개를 한 줄로 (요구사항)
     b1, b2, b3, b4 = st.columns(4)
 
     with b1:
-        if st.button("🧯 실행 취소(Undo)", use_container_width=True):
-            undo_last()
+        if st.button("🧯 실행 취소(Undo)"):
+            pop_history()
+            st.rerun()
 
     with b2:
-        if st.button("↩️ 마지막 1건 삭제", use_container_width=True):
-            if len(st.session_state.df) == 0:
-                st.info("삭제할 데이터가 없습니다.")
-            else:
+        if st.button("↩️ 마지막 1건 삭제"):
+            if len(st.session_state["df"]) > 0:
                 push_history()
-                st.session_state.df = st.session_state.df.iloc[:-1].copy()
-                save_ledger(st.session_state.df)
-                st.success("마지막 1건 삭제 완료")
+                st.session_state["df"] = st.session_state["df"].iloc[1:].reset_index(drop=True)
+                save_df(st.session_state["df"])
+                st.warning("마지막 1건 삭제 완료")
+                st.rerun()
+            else:
+                st.info("삭제할 데이터가 없습니다.")
 
+    # 데이터 에디터용: 삭제 체크 컬럼 추가
+    df_edit = df_view.copy()
+    df_edit.insert(0, "삭제", False)  # ← 체크박스
+
+    edited = st.data_editor(
+        df_edit,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=[],  # 전체 수정 가능(원하면 특정 컬럼만 막을 수도 있음)
+    )
+
+    # 체크된 삭제 버튼
     with b3:
-        if st.button("🗑️ 체크된 항목 선택 삭제", use_container_width=True):
-            st.session_state._do_delete_checked = True
-
-    with b4:
-        if st.button("💾 수정사항 저장(편집 저장)", use_container_width=True):
-            st.session_state._do_save_edits = True
-
-    df_all = st.session_state.df.copy()
-    df_filtered = get_filtered_df(df_all)
-
-    if df_filtered.empty:
-        st.info("필터 조건에 해당하는 데이터가 없습니다.")
-    else:
-        show = df_filtered.copy()
-        show = show.rename(columns={"_idx": "번호"})
-        show.insert(0, "삭제", False)
-
-        show = show[["삭제", "번호", "date", "type", "category", "description", "amount"]].copy()
-        show = show.rename(
-            columns={
-                "date": "날짜",
-                "type": "구분",
-                "category": "카테고리",
-                "description": "내용",
-                "amount": "금액",
-            }
-        )
-
-        edited = st.data_editor(show, use_container_width=True, hide_index=True, key="data_editor")
-
-        # 체크 삭제
-        if st.session_state.get("_do_delete_checked"):
-            st.session_state._do_delete_checked = False
-
-            checked = edited[edited["삭제"] == True]
-            if checked.empty:
+        if st.button("🗑️ 체크된 항목 선택 삭제"):
+            checked = edited[edited["삭제"] == True]  # noqa: E712
+            if len(checked) == 0:
                 st.info("체크된 항목이 없습니다.")
             else:
                 push_history()
-                ids = checked["번호"].tolist()
-                new_all = df_all[~df_all["_idx"].isin(ids)].copy()
-                st.session_state.df = new_all
-                save_ledger(new_all)
-                st.success(f"{len(ids)}건 삭제 완료")
+                del_numbers = checked["번호"].tolist()
 
-        # 편집 저장
-        if st.session_state.get("_do_save_edits"):
-            st.session_state._do_save_edits = False
+                # df_all의 “번호”와 매칭해서 제거
+                df_now = st.session_state["df"].copy()
+                df_now["번호"] = range(len(df_now))
+                df_now = df_now[~df_now["번호"].isin(del_numbers)].drop(columns=["번호"]).reset_index(drop=True)
 
+                st.session_state["df"] = df_now
+                save_df(st.session_state["df"])
+                st.success(f"{len(del_numbers)}건 삭제 완료")
+                st.rerun()
+
+    # 편집 저장 버튼
+    with b4:
+        if st.button("💾 수정사항 저장(편집 저장)"):
             push_history()
 
-            core = edited.copy()
-            core = core.rename(
+            # 사용자가 수정한 값들을 “번호” 기준으로 원본 df에 반영
+            df_now = st.session_state["df"].copy()
+            df_now["번호"] = range(len(df_now))
+
+            # 삭제 체크 컬럼 제거 후, 컬럼명 원복
+            edited2 = edited.copy()
+            if "삭제" in edited2.columns:
+                edited2 = edited2.drop(columns=["삭제"])
+
+            edited2 = edited2.rename(
                 columns={
-                    "번호": "_idx",
                     "날짜": "date",
                     "구분": "type",
                     "카테고리": "category",
-                    "내용": "description",  # ✅ 저장 시도 desc 금지
+                    "내용": "desc",
                     "금액": "amount",
                 }
             )
-            core = core.drop(columns=["삭제"], errors="ignore")
 
-            core["_idx"] = pd.to_numeric(core["_idx"], errors="coerce").fillna(-1).astype(int)
-            core["amount"] = pd.to_numeric(core["amount"], errors="coerce").fillna(0).astype(int)
-            core["description"] = core["description"].fillna("").astype(str)
-
-            new_all = df_all.copy()
-            for _, r in core.iterrows():
-                rid = int(r["_idx"])
-                mask = new_all["_idx"] == rid
+            # 번호 매칭해서 값 업데이트
+            for _, row in edited2.iterrows():
+                n = int(row["번호"])
+                mask = df_now["번호"] == n
                 if mask.any():
-                    new_all.loc[mask, ["date", "type", "category", "description", "amount"]] = [
-                        str(r["date"]),
-                        str(r["type"]),
-                        str(r["category"]),
-                        str(r["description"]),
-                        int(r["amount"]),
-                    ]
+                    df_now.loc[mask, "date"] = row["date"]
+                    df_now.loc[mask, "type"] = str(row["type"])
+                    df_now.loc[mask, "category"] = str(row["category"])
+                    df_now.loc[mask, "desc"] = str(row["desc"])  # ← 내용은 무조건 문자열
+                    df_now.loc[mask, "amount"] = int(pd.to_numeric(row["amount"], errors="coerce") or 0)
 
-            st.session_state.df = new_all
-            save_ledger(new_all)
-            st.success("편집 내용 저장 완료")
+            df_now = df_now.drop(columns=["번호"]).reset_index(drop=True)
+            st.session_state["df"] = df_now
+            save_df(st.session_state["df"])
+            st.success("편집 저장 완료")
+            st.rerun()
 
-        # 검색어 인사이트 (표 밑)
-        if keyword.strip():
-            k = keyword.strip()
-            # 현재 필터 기준(기간/구분/카테고리/검색어 포함) 거래 수 + 합산금액
-            base = df_filtered.copy()
-            count = len(base)
-            total_amt = int(base["amount"].sum()) if count else 0
-            st.markdown("🧠 **검색어 인사이트(간단)**")
-            st.write(f'검색어 "{k}" 포함 거래: **{count}건 / {total_amt:,}원**')
+    # 검색어 통계(표 아래)
+    if keyword.strip():
+        # "현재 필터 결과(df_f)"에서 검색어가 포함된 지출만 따로 통계
+        df_kw = df_f.copy()
+        df_kw = df_kw[df_kw["type"] == "지출"].copy()
+        df_kw = df_kw[df_kw["desc"].astype(str).str.contains(keyword.strip(), na=False)].copy()
+
+        cnt = int(len(df_kw))
+        total = int(df_kw["amount"].sum()) if cnt > 0 else 0
+
+        st.markdown(
+            f"""
+🧾 **검색어 "{keyword.strip()}" 포함 지출: {cnt}건 / {total:,}원**
+""".strip()
+        )
 
 
-# =============================================================================
-# (9) 차트 탭
-# =============================================================================
+# =============================
+# (8-2) 차트 탭
+# =============================
 with tab_chart:
     st.markdown("## 📊 카테고리별 지출 통계")
 
-    df_all = st.session_state.df.copy()
-    df_filtered = get_filtered_df(df_all)
+    # 차트는 “지출”만 의미가 있으니 지출만 집계
+    df_exp = df_f[df_f["type"] == "지출"].copy()
 
-    exp = df_filtered[df_filtered["type"] == "지출"].copy()
-
-    if exp.empty:
-        st.info("지출 데이터가 없어서 차트를 그릴 수 없습니다.")
+    if len(df_exp) == 0:
+        st.info("표시할 지출 데이터가 없습니다. (필터를 넓히거나 지출을 입력하세요)")
     else:
-        agg = exp.groupby("category", as_index=False)["amount"].sum()
-        agg["category"] = pd.Categorical(agg["category"], categories=CATEGORIES, ordered=True)
-        agg = agg.sort_values("category")
+        cat_sum = (
+            df_exp.groupby("category", as_index=False)["amount"]
+            .sum()
+            .sort_values("amount", ascending=False)
+        )
 
-        import plotly.express as px
+        # 카테고리별 컬러(각각 다르게)
+        # - 색이 너무 못생겼던 문제를 줄이려고, 다크테마에서 안정적으로 보이는 세트로 제한
+        color_seq = [
+            "#9B7BFF",  # 보라
+            "#6FA8FF",  # 블루
+            "#58D6C9",  # 민트
+            "#FFC857",  # 옐로
+            "#FF6B9E",  # 핑크
+            "#B7B7C9",  # 그레이
+        ]
 
         fig = px.bar(
-            agg,
+            cat_sum,
             x="category",
             y="amount",
-            text="amount",
             color="category",
-            title="카테고리별 지출 통계",
+            color_discrete_sequence=color_seq,
+            text="amount",
         )
 
-        # 축/숫자/글자 안 보이는 문제 방지(다크)
+        # ===== 축 글자 안 나오던 문제 해결 포인트 =====
+        # 1) plotly_dark + 글자색을 명시(white)
+        # 2) x/y 축 title은 titlefont 같은 잘못된 속성 쓰지 말고 title=dict(font=...)로 써야 함
         fig.update_layout(
             template="plotly_dark",
-            margin=dict(l=40, r=20, t=60, b=50),
-            font=dict(color="#FFFFFF", size=14),
-            xaxis_title="카테고리",
-            yaxis_title="금액(원)",
-            legend_title_text="카테고리",
+            title={"text": "카테고리별 지출 통계", "x": 0.5, "font": {"size": 22, "color": "#EDEDF4"}},
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+            margin=dict(l=40, r=20, t=70, b=40),
         )
-        fig.update_xaxes(showgrid=False, tickfont=dict(color="#FFFFFF"))
-        fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.08)", tickfont=dict(color="#FFFFFF"))
-        fig.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
+        fig.update_xaxes(
+            title={"text": "카테고리", "font": {"color": "#EDEDF4", "size": 16}},
+            tickfont={"color": "#EDEDF4", "size": 14},
+            showgrid=False,
+        )
+        fig.update_yaxes(
+            title={"text": "금액(원)", "font": {"color": "#EDEDF4", "size": 16}},
+            tickfont={"color": "#EDEDF4", "size": 14},
+            tickformat=",d",  # 5k 같은 축약 대신 5000 스타일
+            gridcolor="rgba(255,255,255,0.12)",
+        )
+        fig.update_traces(
+            texttemplate="%{text:,}",  # 막대 위 숫자도 1,000 스타일
+            textposition="outside",
+            cliponaxis=False,
+        )
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # 인사이트(간단): TOP1 + 퍼센티지
-        total = agg["amount"].sum()
-        top = agg.sort_values("amount", ascending=False).iloc[0]
-        top_cat = str(top["category"])
-        top_amt = int(top["amount"])
-        pct = (top_amt / total * 100) if total else 0
+        # 인사이트(그래프 아래): TOP1 카테고리와 비율
+        total_exp = int(cat_sum["amount"].sum())
+        top_cat = cat_sum.iloc[0]["category"]
+        top_amt = int(cat_sum.iloc[0]["amount"])
+        top_pct = int(round((top_amt / total_exp) * 100)) if total_exp > 0 else 0
 
-        st.markdown("🧠 **인사이트(간단)**")
-        st.write(f"이번 기간 지출 TOP: **{top_cat}({pct:.0f}%)**")
+        st.markdown("### 🧠 인사이트(간단)")
+        st.markdown(f"**이번 달 지출 TOP: {top_cat}({top_pct}%)**")
 
 
-# =============================================================================
-# (10) 관제(예산) 탭
-# =============================================================================
+# =============================
+# (8-3) 관제(예산) 탭
+# =============================
 with tab_budget:
     st.markdown("## 🚨 관제(예산)")
 
-    first_day, last_day = this_month_range(date.today())
-    st.caption(f"이번 달 기준: {first_day.strftime('%Y-%m-%d')} ~ {last_day.strftime('%Y-%m-%d')}")
-
-    df_all = st.session_state.df.copy()
-    df_all["_dt"] = to_dt(df_all["date"])
-
-    month_exp = df_all[
-        (df_all["_dt"].notna())
-        & (df_all["_dt"] >= pd.to_datetime(first_day))
-        & (df_all["_dt"] <= pd.to_datetime(last_day))
-        & (df_all["type"] == "지출")
-    ].copy()
-
-    spend_by_cat = month_exp.groupby("category")["amount"].sum().to_dict()
-    total_spend = int(month_exp["amount"].sum()) if not month_exp.empty else 0
+    # “이번 달 기준” 표기용 기간(현재 달)
+    now = pd.Timestamp.today()
+    month_start = now.replace(day=1).date()
+    month_end = (now + pd.offsets.MonthEnd(0)).date()
+    st.markdown(f"이번 달 기준: **{month_start} ~ {month_end}**")
 
     st.markdown("### 📌 카테고리별 예산 설정(원)")
 
-    # ✅ 전체 + 카테고리 예산 입력 (박스 디자인은 위 CSS로 단일 컬러 통일됨)
-    budget_keys = ["전체"] + CATEGORIES
+    # 예산 입력도 “구분/카테고리” 셀렉트박스와 같은 톤으로 보이게 CSS 이미 통일됨.
+    budgets = st.session_state["budgets"]
+
+    # 순서 고정: 전체가 맨 앞
+    budget_keys = ["전체", "식비", "교통", "통신", "생활", "기타"]
+
+    # 한 줄로 쭉 배치
     cols = st.columns(len(budget_keys))
-
-    # 예산 상태 복사본(화면에서 수정 후 저장 버튼으로 반영)
-    new_b = dict(st.session_state.budgets)
-
     for i, k in enumerate(budget_keys):
         with cols[i]:
-            new_b[k] = st.number_input(
-                k,
-                min_value=0,
-                step=10000,
-                value=int(st.session_state.budgets.get(k, 0)),
-                key=f"budget_{k}",
-            )
+            budgets[k] = st.number_input(k, min_value=0, step=10000, value=int(budgets.get(k, 0)))
 
-    if st.button("💾 예산 저장", key="btn_save_budget"):
-        st.session_state.budgets = new_b
-        save_budgets(new_b)
+    # 저장 버튼
+    if st.button("💾 예산 저장"):
+        st.session_state["budgets"] = budgets
+        save_budgets(budgets)
         st.success("예산 저장 완료")
 
-    budgets = new_b
-
-    st.write("---")
+    st.markdown("---")
     st.markdown("### ✅ 이번 달 전체 관제")
 
-    # 전체 예산 계산:
-    # - 사용자가 "전체"에 입력한 값이 있으면 그걸 우선 사용
-    # - 없으면(0이면) 카테고리 예산 합계를 전체 예산으로 사용
-    overall_budget = int(budgets.get("전체", 0))
-    if overall_budget <= 0:
-        overall_budget = sum(int(budgets.get(c, 0)) for c in CATEGORIES)
+    # 이번 달 지출 합계
+    df_month = st.session_state["df"].copy()
+    df_month = df_month.dropna(subset=["date"])
+    df_month = df_month[(df_month["date"] >= month_start) & (df_month["date"] <= month_end)]
+    df_month_exp = df_month[df_month["type"] == "지출"].copy()
 
-    overall_ratio = (total_spend / overall_budget) if overall_budget > 0 else 0.0
+    total_spent = int(df_month_exp["amount"].sum())
+    total_budget = int(budgets.get("전체", 0))
 
-    st.progress(min(overall_ratio, 1.0))
-    st.write(f"총 지출: **{total_spend:,}원** / 총 예산: **{overall_budget:,}원**")
+    # 진행률(예산이 0이면 0으로 처리)
+    ratio = (total_spent / total_budget) if total_budget > 0 else 0.0
+    ratio = max(0.0, min(1.0, ratio))  # 0~1로 고정
 
-    # ✅ 요구사항: "⚠️ 예산의 80%를 사용했습니다!" 다시 뜨게
-    if overall_budget > 0 and 0.8 <= overall_ratio < 1.0:
-        st.warning("⚠️ 예산의 80%를 사용했습니다!")
-    elif overall_budget > 0 and overall_ratio >= 1.0:
-        st.error("🚨 예산을 초과했습니다!")
+    st.progress(ratio)
+    st.markdown(f"**총 지출: {total_spent:,}원 / 총 예산: {total_budget:,}원**")
+
+    # 상태 메시지 + (요구사항) 80% 경고 메시지
+    if total_budget > 0:
+        if total_spent >= total_budget:
+            st.error("🚨 예산을 초과했습니다! 지금부터는 지출을 강하게 줄여야 합니다.")
+        elif total_spent >= int(total_budget * 0.8):
+            # ✅ 요구사항: 이 경고가 다시 뜨게
+            st.warning("⚠️ 예산의 80%를 사용했습니다!")
+        else:
+            st.success("👍 예산 범위 내에서 관리 중입니다.")
     else:
-        st.success("👍 예산 범위 내에서 관리 중입니다.")
+        st.info("전체 예산(전체)을 설정하면 관제 경고/진행률이 정확해집니다.")
 
-    st.write("")
+    st.markdown("---")
     st.markdown("### 📊 카테고리별 관제")
 
-    for c in CATEGORIES:
-        c_budget = int(budgets.get(c, 0))
-        c_spend = int(spend_by_cat.get(c, 0))
-        ratio = (c_spend / c_budget) if c_budget > 0 else 0.0
+    # 카테고리별: (지출/예산) 진행률 표시
+    for k in ["식비", "교통", "통신", "생활", "기타"]:
+        cat_spent = int(df_month_exp[df_month_exp["category"] == k]["amount"].sum())
+        cat_budget = int(budgets.get(k, 0))
 
-        st.write(f"**{c}** | 지출 {c_spend:,}원 / 예산 {c_budget:,}원")
-        st.progress(min(ratio, 1.0))
+        st.markdown(f"**{k} | 지출 {cat_spent:,}원 / 예산 {cat_budget:,}원**")
 
-        if c_budget > 0 and 0.8 <= ratio < 1.0:
-            st.warning(f"⚠️ {c} 예산의 80%를 사용했습니다!")
-        elif c_budget > 0 and ratio >= 1.0:
-            st.error(f"🚨 {c} 예산을 초과했습니다!")
+        if cat_budget > 0:
+            cat_ratio = max(0.0, min(1.0, cat_spent / cat_budget))
+        else:
+            cat_ratio = 0.0
 
-        st.write("")
+        st.progress(cat_ratio)
 
-
-# =============================================================================
-# ✅ 최종본 W 상태 체크 (코드로 보장되는 것들)
-# - desc 완전 제거: 컬럼/변수/키 전부 description
-# - CSV 저장/로드에도 description만 사용 => 재실행해도 '내용' 안 사라짐
-# - 날짜/내용/금액/예산 박스 포함 모든 입력 UI가 "구분/카테고리"와 동일한 단일 컬러 디자인
-# =============================================================================
+        if cat_budget > 0:
+            if cat_spent >= cat_budget:
+                st.error(f"🚨 {k} 예산 초과")
+            elif cat_spent >= int(cat_budget * 0.8):
+                st.warning(f"⚠️ {k} 예산의 80%를 사용했습니다!")
+            else:
+                st.success(f"✅ {k} 정상")
+        else:
+            st.info(f"{k} 예산을 설정하면 카테고리 관제가 더 정확해집니다.")
