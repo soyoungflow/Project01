@@ -1,0 +1,5 @@
+﻿date,type,category,description,amount,cd /mnt/project && cat data/ledger.csv
+2026-01-10,지출,통신,1번째 폰,60000,
+2026-01-10,수입,통신,1번째 폰,60000,
+2026-01-10,수입,식비,월급,60000,
+2026-01-10,지출,식비,밥,3000,
